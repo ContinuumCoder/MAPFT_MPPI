@@ -1,0 +1,283 @@
+"""
+Implementation of Memory-Augmented Model Predictive Path Integral (MA-MPPI) controller.
+"""
+import numpy as np
+from collections import deque
+from controllers.mppi import MPPI
+from memory.memory_repository import MemoryRepository
+from memory.feature_detector import FeatureDetector
+from potentials.memory_potential import MemoryPotential
+
+class MAMPPI(MPPI):
+    """Memory-Augmented Model Predictive Path Integral Controller"""
+    
+    def __init__(self, dynamics_model, running_cost, terminal_cost=None, 
+                 state_dim=4, control_dim=2, horizon=15, num_samples=100, 
+                 noise_sigma=None, lambda_=1.0, temperature=0.5,
+                 u_min=None, u_max=None, dt=0.1, max_features=100, 
+                 detection_thresholds=None, potential_weights=None):
+        """
+        Initialize MA-MPPI controller.
+        
+        Args:
+            dynamics_model: Function for forward dynamics
+            running_cost: Running cost function
+            terminal_cost: Terminal cost function
+            state_dim: Dimension of state space
+            control_dim: Dimension of control space
+            horizon: Planning horizon
+            num_samples: Number of trajectory samples
+            noise_sigma: Control noise covariance matrix
+            lambda_: Path integral weight
+            temperature: Temperature parameter for softmax
+            u_min: Minimum control input
+            u_max: Maximum control input
+            dt: Time step
+            max_features: Maximum number of memory features
+            detection_thresholds: Feature detection thresholds
+            potential_weights: Weights for different potential components
+        """
+        super().__init__(dynamics_model, running_cost, terminal_cost,
+                        state_dim, control_dim, horizon, num_samples,
+                        noise_sigma, lambda_, temperature,
+                        u_min, u_max, dt)
+        
+        # Create memory repository
+        self.memory = MemoryRepository(max_features=max_features, decay_factor=0.95)
+        
+        # Create feature detector
+        self.detector = FeatureDetector(state_dim=state_dim, thresholds=detection_thresholds)
+        
+        # Create memory potential
+        self.memory_potential = MemoryPotential(self.memory)
+        
+        # State history for feature detection
+        self.state_history = deque(maxlen=20)
+        self.control_history = deque(maxlen=10)
+        
+        # Potential field weights
+        self.weights = {
+            'goal': 1.0,      # Goal potential weight
+            'memory': 0.3,    # Memory potential weight
+            'obstacle': 0.5   # Obstacle potential weight
+        }
+        
+        # Override weights if provided
+        if potential_weights is not None:
+            self.weights.update(potential_weights)
+        
+        # Stuck detection state
+        self.stuck = {
+            'is_stuck': False,
+            'duration': 0,
+            'variance': 1.0
+        }
+        
+        # Adaptation parameters
+        self.adaptation = {
+            'temp_increase': 1.5,  # Temperature increase factor when stuck
+            'weight_sigmoid': 0.2,  # Sigmoid steepness for weight adaptation
+            'weight_offset': 5.0    # Sigmoid midpoint
+        }
+        
+        # Visualization data
+        self.viz_data = {
+            'potential_values': [],
+            'weight_values': [],
+            'escape_dir': None
+        }
+        
+        # Step counter
+        self.step_count = 0
+        
+        # Save original cost function
+        self.base_cost = running_cost
+        
+        # Replace running cost with enhanced version
+        self.running_cost = self._memory_enhanced_cost
+    
+    def _memory_enhanced_cost(self, state, control, goal=None, obstacles=None):
+        """
+        Memory-enhanced cost function that incorporates potential fields.
+        
+        Args:
+            state: Current state
+            control: Control input
+            goal: Goal state
+            obstacles: List of obstacles
+            
+        Returns:
+            cost: Enhanced cost value
+        """
+        # Get base cost
+        base_cost = self.base_cost(state, control, goal, obstacles)
+        
+        # Get position component of state
+        position = state[:self.state_dim]
+        
+        # Calculate memory potential
+        memory_pot, _ = self.memory_potential.compute_potential(position, goal)
+        
+        # Calculate goal potential
+        goal_pot = 0.0
+        if goal is not None:
+            goal_pos = goal[:self.state_dim]
+            dist = np.linalg.norm(position - goal_pos)
+            goal_pot = 10.0 * dist**2
+        
+        # Calculate obstacle potential
+        obstacle_pot = 0.0
+        if obstacles is not None:
+            for obs in obstacles:
+                if 'position' in obs and 'radius' in obs:
+                    dist = np.linalg.norm(position - obs['position']) - obs['radius']
+                    if dist < 0:  # Inside obstacle
+                        obstacle_pot += 1000.0
+                    elif dist < 1.0:  # Near obstacle
+                        obstacle_pot += 100.0 * (1.0 - dist)
+        
+        # Combine potentials with weights
+        pot_cost = (
+            self.weights['goal'] * goal_pot +
+            self.weights['memory'] * memory_pot +
+            self.weights['obstacle'] * obstacle_pot
+        )
+        
+        # For visualization
+        if len(self.viz_data['potential_values']) <= self.step_count:
+            self.viz_data['potential_values'].append({
+                'goal': goal_pot,
+                'memory': memory_pot,
+                'obstacle': obstacle_pot,
+                'total': pot_cost
+            })
+        
+        return base_cost + pot_cost
+    
+    def update_weights(self):
+        """Update potential field weights based on stuck state"""
+        if self.stuck['is_stuck']:
+            # Calculate sigmoid value
+            stuck_time = self.stuck['duration'] 
+            sigmoid = 1.0 / (1.0 + np.exp(-self.adaptation['weight_sigmoid'] * 
+                                         (stuck_time - self.adaptation['weight_offset'])))
+            
+            # Update weights
+            self.weights['goal'] = max(0.3, 1.0 - sigmoid*0.7)
+            self.weights['memory'] = sigmoid
+            
+            # Increase temperature to promote exploration
+            self.temperature = self.temperature * self.adaptation['temp_increase']
+        else:
+            # Normal mode
+            self.weights['goal'] = 1.0
+            self.weights['memory'] = 0.3
+            self.temperature = 0.5  # Reset to default
+        
+        # For visualization
+        if len(self.viz_data['weight_values']) <= self.step_count:
+            self.viz_data['weight_values'].append(self.weights.copy())
+    
+    def check_stuck(self, state):
+        """
+        Check if controller is stuck.
+        
+        Args:
+            state: Current state
+            
+        Returns:
+            is_stuck: Boolean indicating if stuck
+        """
+        # Need at least 5 state points
+        if len(self.state_history) < 5:
+            return False
+        
+        # Calculate variance of recent positions
+        positions = np.array(list(self.state_history)[-5:])[:, :self.state_dim]
+        variance = np.var(positions, axis=0).sum()
+        self.stuck['variance'] = variance
+        
+        # Determine if stuck
+        is_stuck = variance < self.detector.thresholds['var']
+        
+        # Update stuck status
+        if is_stuck:
+            if not self.stuck['is_stuck']:
+                print(f"Stuck detected! Position variance: {variance:.4f}")
+            self.stuck['is_stuck'] = True
+            self.stuck['duration'] += 1
+            
+            # Record feature in memory
+            position = state[:self.state_dim]
+            self.memory.add_feature(
+                position=position,
+                radius=2.0,
+                strength=min(5.0, self.stuck['duration']/3),
+                feature_type=1  # Local minimum
+            )
+        else:
+            if self.stuck['is_stuck']:
+                print(f"Escaped from stuck state! Position variance: {variance:.4f}")
+            self.stuck['is_stuck'] = False
+            self.stuck['duration'] = 0
+        
+        return is_stuck
+    
+    def compute_control(self, state, goal=None, obstacles=None):
+        """
+        Compute control input with memory augmentation.
+        
+        Args:
+            state: Current state
+            goal: Target state
+            obstacles: List of obstacles
+            
+        Returns:
+            control: Control input
+        """
+        self.step_count += 1
+        
+        # Update state history
+        self.state_history.append(state.copy())
+        
+        # Check if stuck
+        self.check_stuck(state)
+        
+        # Update potential weights
+        self.update_weights()
+        
+        # Compute control using parent class method
+        control = super().compute_control(state, goal, obstacles)
+        
+        # Update control history
+        self.control_history.append(control.copy())
+        
+        # Update memory repository
+        self.memory.step()
+        
+        return control
+    
+    def reset(self):
+        """Reset controller internal state"""
+        super().reset()
+        
+        # Clear state history
+        self.state_history.clear()
+        self.control_history.clear()
+        
+        # Reset stuck status
+        self.stuck = {
+            'is_stuck': False,
+            'duration': 0,
+            'variance': 1.0
+        }
+        
+        # Reset visualization data
+        self.viz_data = {
+            'potential_values': [],
+            'weight_values': [],
+            'escape_dir': None
+        }
+        
+        # Reset step counter
+        self.step_count = 0
