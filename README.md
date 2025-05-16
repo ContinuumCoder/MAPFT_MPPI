@@ -1,5 +1,3 @@
-# MAPFT_MPPI
-
 
 ## Installation Requirements
 
