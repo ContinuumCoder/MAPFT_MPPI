@@ -12,7 +12,7 @@ Paper: *Memory-Augmented Potential Field Theory: A Framework for Adaptive Contro
 pip install -e .
 ```
 
-Or just use the `mapft/` package directly:
+Or use `mapft/` directly:
 
 ```python
 from mapft import MPPI, MAMPPI
@@ -36,17 +36,16 @@ controller = MPPI(
     u_max=np.array([2, 2, 2]),
 )
 
-# Control loop
 x = x0
 for t in range(max_steps):
     u = controller.command(x)
     x = dynamics(x, u)
 ```
 
-**To switch to MA-MPPI** -- just change the class name:
+**Switch to MA-MPPI** -- just change the import:
 
 ```python
-from mapft import MAMPPI
+from mapft import MAMPPI_Reactive as MAMPPI
 
 # Drop-in replacement: automatically detects traps and escapes
 controller = MAMPPI(
@@ -62,42 +61,36 @@ controller = MAMPPI(
 # Exact same control loop -- memory is fully automatic
 x = x0
 for t in range(max_steps):
-    u = controller.command(x)    # internally detects traps, builds memory
+    u = controller.command(x)
     x = dynamics(x, u)
 ```
 
 ---
 
-## MA-MPPI Variants
+## MA-MPPI Implementations
 
-We provide three MA-MPPI implementations with different detection strategies:
-
-| Variant | Class | Best For |
-|---------|-------|----------|
-| **MA-MPPI** | `MAMPPI` | General use, single-episode tasks |
-| **MA-MPPI Reactive** | `MAMPPI_V2` | Trap-heavy environments, fast detection |
-| **MA-MPPI Adaptive** | `MAMPPI_V3` | Multi-episode tasks, stable long-horizon |
+| Implementation | Import | Strategy | Best For |
+|---|---|---|---|
+| **MA-MPPI** | `MAMPPI` | State-variance detection, single-timescale | General use |
+| **MA-MPPI Reactive** | `MAMPPI_Reactive` | Dual-timescale + directional bias sampling | Trap-heavy environments |
+| **MA-MPPI Adaptive** | `MAMPPI_Adaptive` | Progress-aware + online neural parameter tuning | Multi-episode, long-horizon |
 
 ```python
-from mapft import MAMPPI          # Standard MA-MPPI
-from mapft import MAMPPI_V2       # Reactive: dual-timescale + directional bias
-from mapft import MAMPPI_V3       # Adaptive: progress-aware + neural parameter tuning
+from mapft import MAMPPI              # Standard
+from mapft import MAMPPI_Reactive     # or MAMPPI_R
+from mapft import MAMPPI_Adaptive     # or MAMPPI_A
 ```
-
-### MA-MPPI (Standard)
-
-State-variance-based stagnation detection. Detects when the controller is stuck and adds memory features to reshape the cost landscape.
 
 ### MA-MPPI Reactive
 
-Dual-timescale detection: fast 5-step reactive detection for obvious traps + confirmed 15-step detection for persistent features. Includes directional bias sampling that steers perturbations toward escape directions.
+Dual-timescale detection: fast 5-step detection for immediate reaction + confirmed 15-step detection for persistent features. Includes directional bias sampling that steers a fraction of trajectory perturbations toward escape directions near known traps. Uses both state-variance and cost-variance for stagnation detection, enabling operation in any-dimensional state spaces.
 
 ### MA-MPPI Adaptive
 
-Progress-aware detection that only triggers when cost improvement stalls. Integrates an online-learned neural network that predicts optimal temperature, memory weight, and exploration parameters. Best for multi-episode scenarios via `new_episode()`:
+Progress-aware detection that only triggers when cost improvement stalls (suppresses false positives). Features have a maximum lifetime and decay between episodes. Integrates an online-learned MLP that predicts optimal temperature, memory weight, and exploration parameters from sampling statistics. Designed for multi-episode scenarios:
 
 ```python
-controller = MAMPPI_V3(dynamics, cost, ...)
+controller = MAMPPI_Adaptive(dynamics, cost, ...)
 
 for episode in range(n_episodes):
     controller.new_episode()   # decay old memory, keep learned features
@@ -113,11 +106,11 @@ for episode in range(n_episodes):
 
 Standard MPPI already samples K trajectories and computes their costs at every step. MA-MPPI extracts landscape topology from these existing statistics:
 
-| Information | How MA-MPPI extracts it |
+| Information | Extracted from MPPI sampling |
 |---|---|
 | Local minimum detection | ESS (effective sample size) drops when all samples are trapped |
 | Gradient direction | Weighted mean of perturbations: `sum(w_k * noise_k)` |
-| Landscape curvature | Weight entropy: uniform weights = flat, peaked = sharp |
+| Landscape curvature | Weight entropy: uniform = flat, peaked = sharp |
 | Stagnation | Cost coefficient of variation stops decreasing |
 
 No external gradient computation, no Hessian, no extra cost calls. The sampling **is** the observation.
@@ -126,61 +119,62 @@ No external gradient computation, no Hessian, no extra cost calls. The sampling 
 
 ## Benchmark Results
 
-### L1-L6: 2D Progressive Difficulty (3 trials each)
+### 2D Progressive Difficulty (3 trials each)
 
 | Scenario | MPPI | MA-MPPI Reactive | Improvement |
 |---|---|---|---|
 | L1: Open field (no trap) | **3/3** (dist 0.32) | 3/3 (dist 0.32) | Baseline |
-| L2: Single shallow trap | 0/3 (stuck 3.60) | **3/3** (dist 0.36) | **0% -> 100%** |
-| L3: U-shaped trap | 0/3 (stuck 1.62) | **2/3** (dist 0.86) | **0% -> 67%** |
-| L4: 4 sequential traps | 0/3 (stuck 6.44) | **3/3** (dist 0.37) | **0% -> 100%** |
+| L2: Single shallow trap | 0/3 (stuck at 3.60) | **3/3** (dist 0.36) | **0% -> 100%** |
+| L3: U-shaped trap | 0/3 (stuck at 1.62) | **2/3** (dist 0.86) | **0% -> 67%** |
+| L4: 4 sequential traps | 0/3 (stuck at 6.44) | **3/3** (dist 0.37) | **0% -> 100%** |
 | L5: Corridor + dead-end | 3/3 (dist 0.43) | **3/3** (dist 0.40) | -7% distance |
-| L6: Repeated traps (memory reuse) | 0/3 (stuck 2.78) | **3/3** (dist 0.32) | **0% -> 100%** |
+| L6: Repeated traps | 0/3 (stuck at 2.78) | **3/3** (dist 0.32) | **0% -> 100%** |
 
-MA-MPPI achieves **100% escape rate** on 3 out of 4 trap scenarios where standard MPPI has **0% success**.
+MA-MPPI achieves **100% escape rate** on 3/4 trap scenarios where standard MPPI has **0% success**.
+
+### UAV 3D Navigation
+
+6D double-integrator UAV with Gaussian cost traps on path:
+
+| | MPPI | MA-MPPI Reactive |
+|---|---|---|
+| **Success** | 0/6 | **6/6** |
+| **Final dist** | 1.43 (stuck) | **0.42** (reached) |
 
 ### Trajectory Visualizations
 
-#### L2: Single Trap Escape
-
-MPPI (red) gets trapped in a local minimum. MA-MPPI (blue) detects the trap, builds a memory feature, and navigates around it to reach the goal.
+#### L2: Single Trap — MPPI Stuck, MA-MPPI Escapes
 
 <p align="center">
   <img src="figures/l2_single_trap.png" width="55%"/>
 </p>
 
-#### L4: Sequential Multi-Trap Navigation
-
-Four Gaussian traps along the path. MPPI gets stuck in the first trap. MA-MPPI learns each trap location and threads through all of them.
+#### L4: Four Sequential Traps
 
 <p align="center">
   <img src="figures/l4_multi_traps.png" width="55%"/>
 </p>
 
-#### L6: Memory Reuse Across Repeated Traps
-
-Evenly spaced identical traps. MA-MPPI's persistent memory accumulates knowledge of the trap pattern, enabling faster escape from each successive trap.
+#### L6: Repeated Traps — Memory Reuse
 
 <p align="center">
   <img src="figures/l6_repeated_traps.png" width="55%"/>
 </p>
 
-### UAV 3D Obstacle Avoidance
-
-6D double-integrator UAV navigating through 3D Gaussian cost traps. MA-MPPI detects stagnation via cost-based monitoring and escapes to reach the goal.
+#### UAV 3D Obstacle Avoidance (XY Projection)
 
 <p align="center">
   <img src="figures/uav_3d_xy.png" width="55%"/>
 </p>
 
-### Multi-Episode Learning (UAV)
+### Multi-Episode Learning
 
-MA-MPPI accumulates experience across episodes. MPPI shows no improvement.
+MA-MPPI accumulates experience across episodes. MPPI shows no improvement:
 
 ```
 Episode:   1     2     3     4     5
 MPPI:    2.37 → 2.37 → 2.37 → 2.37 → 2.38  (no learning)
-MA-MPPI: 1.67 → 1.70 → ...                   (30% closer on ep1-2)
+MA-MPPI: 1.67 → 1.70 → ...                   (30% closer from ep1)
 ```
 
 ---
@@ -192,22 +186,22 @@ Standard MPPI Sampling (K trajectories, costs S(τ^k))
     │
     ├─ Weights w_k = softmax(-S(τ^k)/λ)
     │
-    ├─ [MA-MPPI] Sampling Statistics Extraction (zero extra cost)
+    ├─ Sampling Statistics Extraction (zero extra cost)
     │     ├─ ESS = 1/Σw² → local curvature
     │     ├─ H(w) entropy → landscape flatness
     │     ├─ Σw·δu → gradient direction
     │     └─ CV(cost) → stagnation detection
     │
-    ├─ [MA-MPPI] Feature Detection
+    ├─ Feature Detection (dual-timescale)
     │     ├─ Fast (5-step): immediate reaction
     │     └─ Confirmed (15-step): persistent features
     │
-    ├─ [MA-MPPI] Memory Repository M = {(m_i, r_i, γ_i, κ_i, d_i)}
+    ├─ Memory Repository M = {(m_i, r_i, γ_i, κ_i, d_i)}
     │     ├─ Local minima → repulsive potential φ₁
     │     ├─ Low-gradient → directional guide φ₂
     │     └─ High-curvature → saddle potential φ₃
     │
-    ├─ [MA-MPPI] Adaptive Potential Field
+    ├─ Adaptive Potential Field
     │     V(x,M) = α·V_base + (1-α)·V_mem
     │     λ(x,M) = λ₀·(1 + η·(1-α))    (temperature)
     │     Σ_u(x,M) = Σ₀·(1 + μ·(1-α))  (exploration)
@@ -217,36 +211,52 @@ Standard MPPI Sampling (K trajectories, costs S(τ^k))
 
 ---
 
+## RL Baselines
+
+Standalone RL baseline implementations for comparison:
+
+```bash
+python baselines/sac.py --env Pendulum-v1 --steps 2000
+python baselines/ppo.py --env Pendulum-v1 --steps 2000
+python baselines/ddpg.py --env Pendulum-v1 --steps 2000
+```
+
+---
+
 ## Repository Structure
 
 ```
 MAPFT_MPPI/
-├── mapft/                          # Core library (pip installable)
-│   ├── mppi.py                     # Standard MPPI controller
-│   ├── ma_mppi.py                  # MA-MPPI (standard)
+├── mapft/                          # Core library
+│   ├── mppi.py                     # Standard MPPI
+│   ├── ma_mppi.py                  # MA-MPPI
 │   ├── ma_mppi_v2.py               # MA-MPPI Reactive
 │   ├── ma_mppi_v3.py               # MA-MPPI Adaptive
 │   ├── memory.py                   # Feature detection + memory repository
 │   ├── potentials.py               # Type-specific potential fields
 │   └── adaptive.py                 # Online parameter learning network
+├── baselines/                      # RL comparison methods
+│   ├── sac.py                      # Soft Actor-Critic
+│   ├── ppo.py                      # Proximal Policy Optimization
+│   └── ddpg.py                     # Deep Deterministic Policy Gradient
 ├── experiments/
 │   ├── progressive_test.py         # L1-L8 progressive benchmark
 │   ├── benchmark.py                # Basic trap benchmarks
-│   ├── environments.py             # UAV quadrotor + IEEE 39-bus
+│   ├── environments.py             # UAV + IEEE 39-bus
 │   ├── generate_figures.py         # Visualization generation
 │   └── run_all.py                  # Complete experiment suite
 ├── figures/                        # Generated visualizations
-├── pyproject.toml                  # Package configuration
-└── main.py                         # Entry point
+├── pyproject.toml
+└── main.py
 ```
 
 ## Run Experiments
 
 ```bash
-# Progressive difficulty benchmark (L1-L8)
+# Progressive difficulty benchmark
 python experiments/progressive_test.py
 
-# Generate visualization figures
+# Generate trajectory figures
 python experiments/generate_figures.py
 
 # Full benchmark suite
