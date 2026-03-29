@@ -141,12 +141,18 @@ MA-MPPI achieves **100% escape rate** on 3/4 trap scenarios where standard MPPI 
 | **Success** | 0/6 | **6/6** |
 | **Final dist** | 1.43 (stuck) | **0.42** (reached) |
 
-### Trajectory Visualization
+### Trajectory Visualizations
 
-MPPI (red) gets trapped in a local minimum. MA-MPPI (blue) detects the trap via sampling statistics, builds a memory feature, and navigates around it to reach the goal.
+**2D Trap Escape** — MPPI (red) gets trapped in a local minimum. MA-MPPI (blue) detects the trap via sampling statistics, builds a memory feature, and navigates around it.
 
 <p align="center">
-  <img src="figures/l2_single_trap.png" width="55%"/>
+  <img src="figures/l2_single_trap.png" width="50%"/>
+</p>
+
+**UAV 3D Navigation** — 6D double-integrator UAV with two Gaussian cost traps on path. MPPI stays stuck (d=1.44), MA-MPPI escapes toward goal (d=0.52).
+
+<p align="center">
+  <img src="figures/uav_trap_escape.png" width="50%"/>
 </p>
 
 ### Multi-Episode Learning
