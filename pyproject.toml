@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mapft-mppi"
+version = "0.1.0"
+description = "Memory-Augmented Potential Field Theory for MPPI Control"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [
+    {name = "Dongzhe Zheng"},
+    {name = "Wenjie Mei"},
+]
+dependencies = [
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+gpu = ["torch>=2.0"]
+gym = ["gymnasium>=0.29", "mujoco>=3.0"]
+all = ["torch>=2.0", "gymnasium>=0.29", "mujoco>=3.0"]
+
+[tool.setuptools.packages.find]
+include = ["mapft*"]
