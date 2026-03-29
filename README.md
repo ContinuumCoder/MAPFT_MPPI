@@ -141,30 +141,12 @@ MA-MPPI achieves **100% escape rate** on 3/4 trap scenarios where standard MPPI 
 | **Success** | 0/6 | **6/6** |
 | **Final dist** | 1.43 (stuck) | **0.42** (reached) |
 
-### Trajectory Visualizations
+### Trajectory Visualization
 
-#### L2: Single Trap — MPPI Stuck, MA-MPPI Escapes
+MPPI (red) gets trapped in a local minimum. MA-MPPI (blue) detects the trap via sampling statistics, builds a memory feature, and navigates around it to reach the goal.
 
 <p align="center">
   <img src="figures/l2_single_trap.png" width="55%"/>
-</p>
-
-#### L4: Four Sequential Traps
-
-<p align="center">
-  <img src="figures/l4_multi_traps.png" width="55%"/>
-</p>
-
-#### L6: Repeated Traps — Memory Reuse
-
-<p align="center">
-  <img src="figures/l6_repeated_traps.png" width="55%"/>
-</p>
-
-#### UAV 3D Obstacle Avoidance (XY Projection)
-
-<p align="center">
-  <img src="figures/uav_3d_xy.png" width="55%"/>
 </p>
 
 ### Multi-Episode Learning
